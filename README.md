@@ -1,4 +1,4 @@
-### NB!: The fixes in this fork might not work on all paltforms and have only been validated to work with iOS and Android
+### NB!: The fixes in this fork might not work on all platforms and have only been validated to work with iOS and Android
 
 # [package:media_kit](https://github.com/media-kit/media-kit)
 
