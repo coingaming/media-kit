@@ -51,8 +51,17 @@ void nativeEnsureInitialized({String? libmpv}) {
     print('$tag Found ${references.length} reference(s).');
     print('$tag Disposing:\n${references.map((e) => e.address).join('\n')}');
 
-    // I can only get quit to work; [mpv_terminate_destroy] causes direct crash.
     final mpv = generated.MPV(DynamicLibrary.open(NativeLibrary.path));
+
+    // CRITICAL: Clear wakeup callbacks FIRST to prevent "Callback invoked after
+    // it has been deleted" crash. During hot restart, the old NativeCallable
+    // trampolines are destroyed when the old isolate dies, but libmpv still
+    // holds pointers to them. We must clear these before sending any commands.
+    for (final reference in references) {
+      mpv.mpv_set_wakeup_callback(reference.cast(), nullptr, nullptr);
+    }
+
+    // Now safe to send quit command since callbacks are cleared.
     final cmd = 'quit'.toNativeUtf8();
     try {
       for (final reference in references) {
