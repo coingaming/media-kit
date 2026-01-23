@@ -134,17 +134,7 @@ class InitializerIsolate {
       },
     );
 
-    // Add timeout to initialization wait to handle hot restart during init.
-    // If main isolate dies before sending options/libmpv, this prevents zombie.
-    try {
-      await completer.future.timeout(const Duration(seconds: 30));
-    } on TimeoutException {
-      print(
-          'media_kit: InitializerIsolate: Init timeout, main isolate likely dead');
-      port.send(null);
-      receiver.close();
-      Isolate.exit();
-    }
+    await completer.future;
 
     handle ??= mpv.mpv_create();
 
@@ -159,12 +149,6 @@ class InitializerIsolate {
     mpv.mpv_initialize(handle);
     port.send(handle.address);
 
-    // Track consecutive timeouts to detect dead main isolate.
-    // Using 10 second timeout to avoid false positives during heavy processing.
-    // After 2 consecutive timeouts (20 seconds), assume main isolate is dead.
-    int consecutiveTimeouts = 0;
-    const maxConsecutiveTimeouts = 2;
-
     while (!disposed) {
       completer = Completer();
       final event = mpv.mpv_wait_event(handle, kReleaseMode ? -1 : 0.1);
@@ -173,44 +157,14 @@ class InitializerIsolate {
       }
       if (event.ref.event_id != generated.mpv_event_id.MPV_EVENT_NONE) {
         port.send(event.address);
-        // Add timeout to detect dead main isolate (e.g., after hot restart).
-        // If the main isolate is dead, no one will complete this future.
-        try {
-          await completer.future.timeout(const Duration(seconds: 10));
-          consecutiveTimeouts = 0; // Reset on successful response
-        } on TimeoutException {
-          consecutiveTimeouts++;
-          if (consecutiveTimeouts >= maxConsecutiveTimeouts) {
-            // Main isolate is likely dead (hot restart), exit gracefully
-            print(
-                'media_kit: InitializerIsolate: Main isolate unresponsive, exiting');
-            disposed = true;
-            break;
-          }
-        }
+        await completer.future;
       } else {
         await Future.delayed(Duration.zero);
       }
     }
 
-    // Clean up mpv resources before exiting
-    if (handle != null) {
-      // Send quit command to stop mpv processing
-      final cmd = 'quit'.toNativeUtf8();
-      try {
-        mpv.mpv_command_string(handle, cmd.cast());
-      } finally {
-        calloc.free(cmd);
-      }
-      // Note: We don't call mpv_terminate_destroy here because:
-      // - NativeReferenceHolder tracks the handle
-      // - It will be cleaned up on next hot restart or normal dispose
-    }
-
     port.send(null);
     receiver.close();
-    // Exit the isolate explicitly
-    Isolate.exit();
   }
 
   final _ports = HashMap<int, SendPort>();

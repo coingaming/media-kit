@@ -9,6 +9,7 @@ import 'package:media_kit/generated/libmpv/bindings.dart' as generated;
 import 'package:media_kit/src/player/native/core/execmem_restriction.dart';
 import 'package:media_kit/src/player/native/core/initializer_isolate.dart';
 import 'package:media_kit/src/player/native/core/initializer_native_callable.dart';
+import 'package:media_kit/src/player/native/core/initializer_polling.dart';
 import 'package:media_kit/src/values.dart';
 
 /// {@template initializer}
@@ -16,6 +17,15 @@ import 'package:media_kit/src/values.dart';
 /// Initializer
 /// -----------
 /// Initializes [Pointer<mpv_handle>] & notifies about events through the supplied callback.
+///
+/// Uses different implementations based on platform and build mode:
+/// - **Release/Profile mode**: Uses [InitializerNativeCallable] for efficient callback-based event handling
+/// - **Debug mode**: Uses [InitializerPolling] to avoid NativeCallable crash on hot restart
+/// - **Execmem restricted platforms**: Uses [InitializerIsolate] (polling in separate isolate)
+///
+/// The debug mode polling approach avoids the "Callback invoked after it has been deleted"
+/// crash that occurs when Flutter hot restart destroys the Dart isolate while libmpv's
+/// background threads still hold references to the NativeCallable trampoline.
 ///
 /// {@endtemplate}
 class Initializer {
@@ -34,38 +44,31 @@ class Initializer {
   /// Generated libmpv C API bindings.
   final generated.MPV mpv;
 
-  /// Whether to use the Isolate-based initializer.
-  ///
-  /// In debug mode, we MUST use InitializerIsolate because:
-  /// - Hot restart kills the Dart isolate without calling dispose
-  /// - NativeCallable trampolines are destroyed with the isolate
-  /// - libmpv's background threads may still try to invoke the wakeup callback
-  /// - This causes "Callback invoked after it has been deleted" crash
-  ///
-  /// InitializerIsolate avoids this by using polling instead of callbacks:
-  /// - Dart polls libmpv (Dart → native direction)
-  /// - libmpv never calls into Dart
-  /// - No callback = no crash on hot restart
-  static bool get _useIsolate => isExecmemRestricted || kDebugMode;
-
   /// Creates [Pointer<mpv_handle>].
   Future<Pointer<generated.mpv_handle>> create(
     Future<void> Function(Pointer<generated.mpv_event>) callback, {
     Map<String, String> options = const {},
   }) async {
-    if (!_useIsolate) {
-      return InitializerNativeCallable(mpv).create(callback, options: options);
-    } else {
+    if (isExecmemRestricted) {
+      // Execmem restricted platforms (e.g., iOS) use isolate-based polling
       return InitializerIsolate().create(callback, options: options);
+    } else if (kDebugMode) {
+      // Debug mode: Use polling to avoid NativeCallable crash on hot restart
+      return InitializerPolling(mpv).create(callback, options: options);
+    } else {
+      // Release/Profile mode: Use efficient NativeCallable
+      return InitializerNativeCallable(mpv).create(callback, options: options);
     }
   }
 
   /// Disposes [Pointer<mpv_handle>].
   void dispose(Pointer<generated.mpv_handle> ctx) {
-    if (!_useIsolate) {
-      InitializerNativeCallable(mpv).dispose(ctx);
-    } else {
+    if (isExecmemRestricted) {
       InitializerIsolate().dispose(mpv, ctx);
+    } else if (kDebugMode) {
+      InitializerPolling(mpv).dispose(ctx);
+    } else {
+      InitializerNativeCallable(mpv).dispose(ctx);
     }
   }
 }
