@@ -302,9 +302,23 @@ class NativeVideoController extends PlatformVideoController {
           // Restore vo and refresh the frame
           final vo = _voBeforeSuspend ?? configuration.vo ?? 'libmpv';
           await setProperty('vo', vo);
-          // Seek to current position to refresh the video frame
-          final currentPosition = player.state.position;
-          await player.seek(currentPosition);
+
+          // Force a frame to be decoded by seeking with a small offset
+          // Seeking to the exact same position is often a no-op in mpv
+          final currentPositionVo = player.state.position;
+          final durationVo = player.state.duration;
+
+          // Seek forward by 1ms then back to force frame decode
+          if (durationVo > Duration.zero && currentPositionVo < durationVo) {
+            final seekTarget =
+                currentPositionVo + const Duration(milliseconds: 1);
+            if (seekTarget < durationVo) {
+              await player.seek(seekTarget);
+            }
+          }
+          // Seek back to original position
+          await player.seek(currentPositionVo);
+
           isSuspended = false;
           _voBeforeSuspend = null;
           debugPrint(
@@ -315,9 +329,24 @@ class NativeVideoController extends PlatformVideoController {
           // Restore vid
           final vid = _vidBeforeSuspend ?? 'auto';
           await setProperty('vid', vid);
-          // Seek to current position to refresh the video frame
+
+          // Force a frame to be decoded by seeking with a small offset
+          // Seeking to the exact same position is often a no-op in mpv
           final currentPosition = player.state.position;
+          final duration = player.state.duration;
+
+          // Seek forward by 1ms then back to force frame decode
+          // Make sure we don't seek past the end
+          if (duration > Duration.zero && currentPosition < duration) {
+            final seekTarget =
+                currentPosition + const Duration(milliseconds: 1);
+            if (seekTarget < duration) {
+              await player.seek(seekTarget);
+            }
+          }
+          // Seek back to original position
           await player.seek(currentPosition);
+
           isSuspended = false;
           _vidBeforeSuspend = null;
           debugPrint(

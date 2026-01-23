@@ -245,9 +245,6 @@ class AndroidVideoController extends PlatformVideoController {
     );
   }
 
-  /// The vo value before suspension, used to restore on resume.
-  String? _voBeforeSuspend;
-
   /// The vid value before suspension, used to restore on resume.
   String? _vidBeforeSuspend;
 
@@ -261,20 +258,26 @@ class AndroidVideoController extends PlatformVideoController {
     return lock.synchronized(() async {
       if (_disposed || isSuspended) return;
 
-      _currentSuspensionMode = mode;
+      // On Android, disableOutput mode (vo=null) is NOT safe because it loses
+      // the surface/window ID binding. When trying to restore vo=gpu, mpv crashes
+      // with: "assertion vo->opts->WinID != 0 && vo->opts->WinID != -1 failed"
+      //
+      // Therefore, we automatically use disableDecoding (vid=no) instead,
+      // which is safe and still provides significant power savings.
+      final effectiveMode = mode == OffscreenSuspensionMode.disableOutput
+          ? OffscreenSuspensionMode.disableDecoding
+          : mode;
 
-      switch (mode) {
+      _currentSuspensionMode = effectiveMode;
+
+      switch (effectiveMode) {
         case OffscreenSuspensionMode.none:
           return;
 
         case OffscreenSuspensionMode.disableOutput:
-          // Save current vo value and disable video output
-          _voBeforeSuspend = configuration.vo ?? 'gpu';
-          await setProperty('vo', 'null');
-          isSuspended = true;
-          debugPrint(
-              'media_kit: AndroidVideoController: Suspended video output (vo=null)');
-          break;
+          // This case should never be reached due to the fallback above,
+          // but kept for completeness
+          return;
 
         case OffscreenSuspensionMode.disableDecoding:
           // Save current vid value and disable video track
@@ -303,25 +306,32 @@ class AndroidVideoController extends PlatformVideoController {
           return;
 
         case OffscreenSuspensionMode.disableOutput:
-          // Restore vo and refresh the frame
-          final vo = _voBeforeSuspend ?? configuration.vo ?? 'gpu';
-          await setProperty('vo', vo);
-          // Seek to current position to refresh the video frame
-          final currentPosition = player.state.position;
-          await player.seek(currentPosition);
-          isSuspended = false;
-          _voBeforeSuspend = null;
-          debugPrint(
-              'media_kit: AndroidVideoController: Resumed video output (vo=$vo)');
-          break;
+          // This case should never be reached on Android
+          // (disableOutput is converted to disableDecoding in suspend)
+          return;
 
         case OffscreenSuspensionMode.disableDecoding:
           // Restore vid
           final vid = _vidBeforeSuspend ?? 'auto';
           await setProperty('vid', vid);
-          // Seek to current position to refresh the video frame
+
+          // Force a frame to be decoded by seeking with a small offset
+          // Seeking to the exact same position is often a no-op in mpv
           final currentPosition = player.state.position;
+          final duration = player.state.duration;
+
+          // Seek forward by 1ms then back to force frame decode
+          // Make sure we don't seek past the end
+          if (duration > Duration.zero && currentPosition < duration) {
+            final seekTarget =
+                currentPosition + const Duration(milliseconds: 1);
+            if (seekTarget < duration) {
+              await player.seek(seekTarget);
+            }
+          }
+          // Seek back to original position
           await player.seek(currentPosition);
+
           isSuspended = false;
           _vidBeforeSuspend = null;
           debugPrint(

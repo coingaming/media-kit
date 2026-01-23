@@ -14,6 +14,10 @@ enum OffscreenSuspensionMode {
   /// - Stops frame rendering callbacks
   /// - Video decoding may continue (lower CPU savings)
   /// - Quick resume with minimal stutter
+  ///
+  /// **Note:** On Android, this mode is automatically converted to
+  /// [disableDecoding] because the Android video output cannot be safely
+  /// detached and reattached.
   disableOutput,
 
   /// Disable video track by setting mpv's `vid=no`.
@@ -69,6 +73,13 @@ class OffscreenBehavior {
   ///
   /// This controls whether and how mpv stops processing video frames
   /// when the video is not visible.
+  ///
+  /// **Platform notes:**
+  /// - On **Android**, [OffscreenSuspensionMode.disableOutput] is automatically
+  ///   converted to [OffscreenSuspensionMode.disableDecoding] because Android's
+  ///   video output is tied to a surface that cannot be safely detached and
+  ///   reattached. This still provides significant power savings.
+  /// - On other platforms (iOS, macOS, Windows, Linux), both modes work as expected.
   ///
   /// Defaults to [OffscreenSuspensionMode.none].
   final OffscreenSuspensionMode suspensionMode;
