@@ -178,6 +178,9 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
   bool _suspendedDueToOffscreen = false;
   Timer? _visibilityDebounceTimer;
 
+  // Controls fade-in animation when restoring from culled state
+  double _videoOpacity = 1.0;
+
   // Public API:
 
   bool isFullscreen() {
@@ -236,8 +239,9 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
       widget.controller.suspendVideoOutput(behavior.suspensionMode);
     }
 
-    // Trigger rebuild for culling
+    // Trigger rebuild for culling and reset opacity for fade-in on return
     if (behavior.cullWhenOffscreen) {
+      _videoOpacity = 0.0; // Start invisible, will fade in when restored
       setState(() {});
     }
   }
@@ -248,6 +252,7 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
     _isOffscreen = false;
 
     final behavior = widget.offscreenBehavior;
+    final wasCulled = behavior.cullWhenOffscreen;
 
     // Capture state before any async operations
     final wasSuspended = _suspendedDueToOffscreen;
@@ -259,16 +264,17 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
 
     // If culling was enabled, we need to wait for the widget to be re-mounted
     // before resuming video output. setState is async - rebuild happens next frame.
-    if (behavior.cullWhenOffscreen) {
+    if (wasCulled) {
       setState(() {});
 
       // Wait for the rebuild to complete before resuming
-      WidgetsBinding.instance.addPostFrameCallback((_) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
         if (!mounted) return;
 
         // Resume video output after widget is mounted
+        // MUST await to ensure video track is ready before playing
         if (wasSuspended) {
-          widget.controller.resumeVideoOutput();
+          await widget.controller.resumeVideoOutput();
         }
 
         // Resume playback after video output is restored
@@ -276,20 +282,29 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
           widget.controller.player.play();
         }
 
+        // Trigger fade-in animation after video is ready
+        if (mounted) {
+          setState(() {
+            _videoOpacity = 1.0;
+          });
+        }
+
         // Invoke callback last
         behavior.onOnscreen?.call(visibleFraction);
       });
     } else {
-      // No culling - can resume immediately
-      if (wasSuspended) {
-        widget.controller.resumeVideoOutput();
-      }
+      // No culling - can resume immediately, but still need to await
+      () async {
+        if (wasSuspended) {
+          await widget.controller.resumeVideoOutput();
+        }
 
-      if (behavior.resumeWhenOnscreen && wasPaused) {
-        widget.controller.player.play();
-      }
+        if (behavior.resumeWhenOnscreen && wasPaused) {
+          widget.controller.player.play();
+        }
 
-      behavior.onOnscreen?.call(visibleFraction);
+        behavior.onOnscreen?.call(visibleFraction);
+      }();
     }
   }
 
@@ -674,8 +689,8 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
       );
     }
 
-    // Normal video view rendering
-    return ValueListenableBuilder<PlatformVideoController?>(
+    // Normal video view rendering with fade-in support
+    final videoWidget = ValueListenableBuilder<PlatformVideoController?>(
       valueListenable: widget.controller.notifier,
       builder: (context, notifier, _) => notifier == null
           ? const SizedBox.shrink()
@@ -704,6 +719,17 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
               },
             ),
     );
+
+    // Wrap with AnimatedOpacity for smooth fade-in when restoring from culled state
+    if (widget.offscreenBehavior.cullWhenOffscreen) {
+      return AnimatedOpacity(
+        opacity: _videoOpacity,
+        duration: const Duration(milliseconds: 150),
+        child: videoWidget,
+      );
+    }
+
+    return videoWidget;
   }
 }
 
