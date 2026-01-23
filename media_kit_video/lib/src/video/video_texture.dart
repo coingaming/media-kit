@@ -256,25 +256,48 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
 
     final behavior = widget.offscreenBehavior;
 
-    // Trigger rebuild first to restore texture before resuming
+    // Capture state before any async operations
+    final wasSuspended = _suspendedDueToOffscreen;
+    final wasPaused = _pausedDueToOffscreen;
+
+    // Reset flags immediately
+    _suspendedDueToOffscreen = false;
+    _pausedDueToOffscreen = false;
+
+    // If culling was enabled, we need to wait for the Texture to be re-mounted
+    // before resuming video output. setState is async - rebuild happens next frame.
     if (behavior.cullWhenOffscreen) {
       setState(() {});
-    }
 
-    // Resume video output if it was suspended
-    if (_suspendedDueToOffscreen) {
-      _suspendedDueToOffscreen = false;
-      widget.controller.resumeVideoOutput();
-    }
+      // Wait for the rebuild to complete before resuming
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
 
-    // Resume playback if configured and was paused due to offscreen
-    if (behavior.resumeWhenOnscreen && _pausedDueToOffscreen) {
-      _pausedDueToOffscreen = false;
-      widget.controller.player.play();
-    }
+        // Resume video output after Texture is mounted
+        if (wasSuspended) {
+          widget.controller.resumeVideoOutput();
+        }
 
-    // Invoke callback last (after automatic actions complete)
-    behavior.onOnscreen?.call(visibleFraction);
+        // Resume playback after video output is restored
+        if (behavior.resumeWhenOnscreen && wasPaused) {
+          widget.controller.player.play();
+        }
+
+        // Invoke callback last
+        behavior.onOnscreen?.call(visibleFraction);
+      });
+    } else {
+      // No culling - can resume immediately
+      if (wasSuspended) {
+        widget.controller.resumeVideoOutput();
+      }
+
+      if (behavior.resumeWhenOnscreen && wasPaused) {
+        widget.controller.player.play();
+      }
+
+      behavior.onOnscreen?.call(visibleFraction);
+    }
   }
 
   /// Called when visibility changes, with debouncing.
