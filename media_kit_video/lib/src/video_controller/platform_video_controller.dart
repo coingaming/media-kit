@@ -8,6 +8,7 @@ import 'package:flutter/widgets.dart';
 
 import 'package:media_kit/media_kit.dart';
 
+import 'package:media_kit_video/src/video/offscreen_behavior.dart';
 import 'package:media_kit_video/src/video_controller/video_controller.dart';
 
 /// {@template platform_video_controller}
@@ -59,6 +60,24 @@ abstract class PlatformVideoController {
   /// Use [waitUntilFirstFrameRendered] to wait for the first frame to be rendered.
   @protected
   final waitUntilFirstFrameRenderedCompleter = Completer<void>();
+
+  /// Whether video output is currently suspended.
+  bool get isSuspended => _isSuspended;
+  @protected
+  set isSuspended(bool value) => _isSuspended = value;
+  bool _isSuspended = false;
+
+  /// Suspends video frame processing.
+  ///
+  /// The [mode] parameter determines how suspension is achieved:
+  /// - [OffscreenSuspensionMode.disableOutput]: Sets vo=null
+  /// - [OffscreenSuspensionMode.disableDecoding]: Sets vid=no
+  ///
+  /// Call [resumeVideoOutput] to resume.
+  Future<void> suspendVideoOutput(OffscreenSuspensionMode mode);
+
+  /// Resumes video frame processing after [suspendVideoOutput].
+  Future<void> resumeVideoOutput();
 
   void dispose() {
     id.dispose();

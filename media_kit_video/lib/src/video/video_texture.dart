@@ -14,6 +14,7 @@ import 'package:media_kit_video/media_kit_video_controls/media_kit_video_control
 import 'package:media_kit_video/src/subtitle/subtitle_view.dart';
 import 'package:media_kit_video/src/utils/dispose_safe_notifer.dart';
 import 'package:media_kit_video/src/utils/wakelock.dart';
+import 'package:media_kit_video/src/video/offscreen_behavior.dart';
 import 'package:media_kit_video/src/video_controller/platform_video_controller.dart';
 import 'package:media_kit_video/src/video_controller/video_controller.dart';
 import 'package:media_kit_video/src/video_view_parameters.dart';
@@ -117,6 +118,23 @@ class Video extends StatefulWidget {
 
   final Widget? thumbnail;
 
+  /// Configuration for video behavior when scrolled offscreen.
+  ///
+  /// Use this to optimize performance when videos are in scrollable lists
+  /// by pausing, suspending frame processing, or culling videos that are
+  /// not visible.
+  ///
+  /// Example:
+  /// ```dart
+  /// Video(
+  ///   controller: controller,
+  ///   offscreenBehavior: OffscreenBehavior.powerSaving,
+  /// )
+  /// ```
+  ///
+  /// See [OffscreenBehavior] for available presets and customization options.
+  final OffscreenBehavior offscreenBehavior;
+
   /// {@macro video}
   const Video({
     super.key,
@@ -137,6 +155,7 @@ class Video extends StatefulWidget {
     this.onExitFullscreen = defaultExitNativeFullscreen,
     this.focusNode,
     this.thumbnail,
+    this.offscreenBehavior = const OffscreenBehavior(),
   });
 
   @override
@@ -157,6 +176,12 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
   late bool _showThumbnail = !widget.controller.player.state.playing;
 
   bool _pauseDueToPauseUponEnteringBackgroundMode = false;
+
+  // Offscreen behavior state
+  bool _isOffscreen = false;
+  bool _pausedDueToOffscreen = false;
+  bool _suspendedDueToOffscreen = false;
+  Timer? _visibilityDebounceTimer;
   // Public API:
   bool isFullscreen() {
     return media_kit_video_controls.isFullscreen(_contextNotifier.value!);
@@ -182,6 +207,170 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
       padding,
       duration: duration,
     );
+  }
+
+  /// Whether the thumbnail is currently being displayed.
+  ///
+  /// Returns `true` if:
+  /// - A [Video.thumbnail] widget is provided, AND
+  /// - The video is at position 0 (hasn't started playing yet)
+  ///
+  /// This can be used by video controls to hide loading indicators
+  /// when a thumbnail is visible.
+  bool get isShowingThumbnail => widget.thumbnail != null && _showThumbnail;
+
+  /// Handles transition to offscreen state.
+  void _handleOffscreen(double visibleFraction) {
+    if (_isOffscreen) return; // Already offscreen
+    _isOffscreen = true;
+
+    final behavior = widget.offscreenBehavior;
+
+    // Invoke callback first (before automatic actions)
+    behavior.onOffscreen?.call(visibleFraction);
+
+    // Pause if configured
+    if (behavior.pauseWhenOffscreen) {
+      if (widget.controller.player.state.playing) {
+        _pausedDueToOffscreen = true;
+        widget.controller.player.pause();
+      }
+    }
+
+    // Suspend video output if configured
+    if (behavior.suspensionMode != OffscreenSuspensionMode.none) {
+      _suspendedDueToOffscreen = true;
+      widget.controller.suspendVideoOutput(behavior.suspensionMode);
+    }
+
+    // Trigger rebuild for culling
+    if (behavior.cullWhenOffscreen) {
+      setState(() {});
+    }
+  }
+
+  /// Handles transition to onscreen state.
+  void _handleOnscreen(double visibleFraction) {
+    if (!_isOffscreen) return; // Already onscreen
+    _isOffscreen = false;
+
+    final behavior = widget.offscreenBehavior;
+
+    // Trigger rebuild first to restore texture before resuming
+    if (behavior.cullWhenOffscreen) {
+      setState(() {});
+    }
+
+    // Resume video output if it was suspended
+    if (_suspendedDueToOffscreen) {
+      _suspendedDueToOffscreen = false;
+      widget.controller.resumeVideoOutput();
+    }
+
+    // Resume playback if configured and was paused due to offscreen
+    if (behavior.resumeWhenOnscreen && _pausedDueToOffscreen) {
+      _pausedDueToOffscreen = false;
+      widget.controller.player.play();
+    }
+
+    // Invoke callback last (after automatic actions complete)
+    behavior.onOnscreen?.call(visibleFraction);
+  }
+
+  /// Called when visibility changes, with debouncing.
+  void _onVisibilityChanged(double visibleFraction) {
+    final behavior = widget.offscreenBehavior;
+    if (!behavior.isEnabled) return;
+
+    final isCurrentlyOffscreen =
+        visibleFraction <= behavior.visibilityThreshold;
+
+    // Skip if no change
+    if (isCurrentlyOffscreen == _isOffscreen) return;
+
+    // Cancel any pending debounce
+    _visibilityDebounceTimer?.cancel();
+
+    // Apply debouncing
+    if (behavior.debounceDuration > Duration.zero) {
+      _visibilityDebounceTimer = Timer(behavior.debounceDuration, () {
+        if (isCurrentlyOffscreen) {
+          _handleOffscreen(visibleFraction);
+        } else {
+          _handleOnscreen(visibleFraction);
+        }
+      });
+    } else {
+      // No debounce
+      if (isCurrentlyOffscreen) {
+        _handleOffscreen(visibleFraction);
+      } else {
+        _handleOnscreen(visibleFraction);
+      }
+    }
+  }
+
+  /// Checks the current visibility of this widget and triggers callbacks.
+  void _checkVisibility() {
+    if (!mounted) return;
+    final behavior = widget.offscreenBehavior;
+    if (!behavior.isEnabled) return;
+
+    final renderObject = context.findRenderObject();
+    if (renderObject == null || !renderObject.attached) return;
+
+    final RenderBox? box = renderObject is RenderBox ? renderObject : null;
+    if (box == null) return;
+
+    // Get the viewport (scroll view) bounds
+    final scrollableState = Scrollable.maybeOf(context);
+    if (scrollableState == null) {
+      // Not inside a scrollable - assume always visible
+      _onVisibilityChanged(1.0);
+      return;
+    }
+
+    final viewportRenderObject = scrollableState.context.findRenderObject();
+    if (viewportRenderObject == null) return;
+
+    try {
+      // Get widget bounds in global coordinates
+      final widgetSize = box.size;
+      final widgetTopLeft = box.localToGlobal(Offset.zero);
+      final widgetRect = widgetTopLeft & widgetSize;
+
+      // Get viewport bounds in global coordinates
+      final RenderBox viewportBox = viewportRenderObject as RenderBox;
+      final viewportTopLeft = viewportBox.localToGlobal(Offset.zero);
+      final viewportRect = viewportTopLeft & viewportBox.size;
+
+      // Calculate intersection
+      final intersection = widgetRect.intersect(viewportRect);
+
+      // Calculate visible fraction
+      final widgetArea = widgetRect.width * widgetRect.height;
+      if (widgetArea <= 0) {
+        _onVisibilityChanged(0.0);
+        return;
+      }
+
+      final visibleArea = intersection.width > 0 && intersection.height > 0
+          ? intersection.width * intersection.height
+          : 0.0;
+
+      final visibleFraction = visibleArea / widgetArea;
+      _onVisibilityChanged(visibleFraction.clamp(0.0, 1.0));
+    } catch (_) {
+      // Ignore errors from detached render objects
+    }
+  }
+
+  /// Handles scroll notifications to check visibility.
+  bool _handleScrollNotification(ScrollNotification notification) {
+    // Check visibility after each scroll update
+    _checkVisibility();
+    // Don't consume the notification
+    return false;
   }
 
   void update({
@@ -381,6 +570,7 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _visibilityDebounceTimer?.cancel();
     _wakelock.disable();
     for (final subscription in _subscriptions) {
       subscription.cancel();
@@ -398,7 +588,14 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    return media_kit_video_controls.VideoStateInheritedWidget(
+    // Schedule visibility check after build
+    if (widget.offscreenBehavior.isEnabled) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _checkVisibility();
+      });
+    }
+
+    Widget content = media_kit_video_controls.VideoStateInheritedWidget(
       state: this as dynamic,
       contextNotifier: _contextNotifier,
       videoViewParametersNotifier: videoViewParametersNotifier,
@@ -417,66 +614,19 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
                   child: FittedBox(
                     fit: videoViewParameters.fit,
                     alignment: videoViewParameters.alignment,
-                    child: ValueListenableBuilder<PlatformVideoController?>(
-                      valueListenable: widget.controller.notifier,
-                      builder: (context, notifier, _) => notifier == null
-                          ? const SizedBox.shrink()
-                          : ValueListenableBuilder<int?>(
-                              valueListenable: notifier.id,
-                              builder: (context, id, _) {
-                                return ValueListenableBuilder<Rect?>(
-                                  valueListenable: notifier.rect,
-                                  builder: (context, rect, _) {
-                                    if (id != null &&
-                                        rect != null &&
-                                        _visible) {
-                                      return SizedBox(
-                                        // Apply aspect ratio if provided.
-                                        width:
-                                            videoViewParameters.aspectRatio ==
-                                                    null
-                                                ? rect.width
-                                                : rect.height *
-                                                    videoViewParameters
-                                                        .aspectRatio!,
-                                        height: rect.height,
-                                        child: Stack(
-                                          children: [
-                                            const SizedBox(),
-                                            Positioned.fill(
-                                              child: Texture(
-                                                textureId: id,
-                                                filterQuality:
-                                                    videoViewParameters
-                                                        .filterQuality,
-                                              ),
-                                            ),
-                                            // Keep the |Texture| hidden before the first frame renders. In native implementation, if no default frame size is passed (through VideoController), a starting 1 pixel sized texture/surface is created to initialize the render context & check for H/W support.
-                                            // This is then resized based on the video dimensions & accordingly texture ID, texture, EGLDisplay, EGLSurface etc. (depending upon platform) are also changed. Just don't show that 1 pixel texture to the UI.
-                                            // NOTE: Unmounting |Texture| causes the |MarkTextureFrameAvailable| to not do anything on GNU/Linux.
-                                            if (rect.width <= 1.0 &&
-                                                rect.height <= 1.0)
-                                              Positioned.fill(
-                                                child: Container(
-                                                  color:
-                                                      videoViewParameters.fill,
-                                                ),
-                                              ),
-                                          ],
-                                        ),
-                                      );
-                                    }
-                                    return const SizedBox.shrink();
-                                  },
-                                );
-                              },
-                            ),
-                    ),
+                    child: _buildVideoTexture(videoViewParameters),
                   ),
                 ),
-                if (widget.thumbnail != null && _showThumbnail)
+                if (widget.thumbnail != null)
                   Positioned.fill(
-                    child: widget.thumbnail!,
+                    child: AnimatedOpacity(
+                      opacity: _showThumbnail ? 1.0 : 0.0,
+                      duration: const Duration(milliseconds: 150),
+                      child: IgnorePointer(
+                        ignoring: !_showThumbnail,
+                        child: widget.thumbnail!,
+                      ),
+                    ),
                   ),
                 if (videoViewParameters.subtitleViewConfiguration.visible &&
                     !(widget.controller.player.platform?.configuration.libass ??
@@ -498,6 +648,91 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
           );
         },
       ),
+    );
+
+    // Wrap with scroll notification listener if offscreen behavior is enabled
+    if (widget.offscreenBehavior.isEnabled) {
+      content = NotificationListener<ScrollNotification>(
+        onNotification: _handleScrollNotification,
+        child: content,
+      );
+    }
+
+    return content;
+  }
+
+  /// Builds the video texture widget, with culling support.
+  Widget _buildVideoTexture(VideoViewParameters videoViewParameters) {
+    // If culling is enabled and we're offscreen, return a placeholder
+    if (widget.offscreenBehavior.cullWhenOffscreen && _isOffscreen) {
+      return ValueListenableBuilder<PlatformVideoController?>(
+        valueListenable: widget.controller.notifier,
+        builder: (context, notifier, _) {
+          if (notifier == null) return const SizedBox.shrink();
+          return ValueListenableBuilder<Rect?>(
+            valueListenable: notifier.rect,
+            builder: (context, rect, _) {
+              if (rect == null || !_visible) return const SizedBox.shrink();
+              // Return a colored placeholder of the same size
+              return SizedBox(
+                width: videoViewParameters.aspectRatio == null
+                    ? rect.width
+                    : rect.height * videoViewParameters.aspectRatio!,
+                height: rect.height,
+                child: Container(color: videoViewParameters.fill),
+              );
+            },
+          );
+        },
+      );
+    }
+
+    // Normal video texture rendering
+    return ValueListenableBuilder<PlatformVideoController?>(
+      valueListenable: widget.controller.notifier,
+      builder: (context, notifier, _) => notifier == null
+          ? const SizedBox.shrink()
+          : ValueListenableBuilder<int?>(
+              valueListenable: notifier.id,
+              builder: (context, id, _) {
+                return ValueListenableBuilder<Rect?>(
+                  valueListenable: notifier.rect,
+                  builder: (context, rect, _) {
+                    if (id != null && rect != null && _visible) {
+                      return SizedBox(
+                        // Apply aspect ratio if provided.
+                        width: videoViewParameters.aspectRatio == null
+                            ? rect.width
+                            : rect.height * videoViewParameters.aspectRatio!,
+                        height: rect.height,
+                        child: Stack(
+                          children: [
+                            const SizedBox(),
+                            Positioned.fill(
+                              child: Texture(
+                                textureId: id,
+                                filterQuality:
+                                    videoViewParameters.filterQuality,
+                              ),
+                            ),
+                            // Keep the |Texture| hidden before the first frame renders. In native implementation, if no default frame size is passed (through VideoController), a starting 1 pixel sized texture/surface is created to initialize the render context & check for H/W support.
+                            // This is then resized based on the video dimensions & accordingly texture ID, texture, EGLDisplay, EGLSurface etc. (depending upon platform) are also changed. Just don't show that 1 pixel texture to the UI.
+                            // NOTE: Unmounting |Texture| causes the |MarkTextureFrameAvailable| to not do anything on GNU/Linux.
+                            if (rect.width <= 1.0 && rect.height <= 1.0)
+                              Positioned.fill(
+                                child: Container(
+                                  color: videoViewParameters.fill,
+                                ),
+                              ),
+                          ],
+                        ),
+                      );
+                    }
+                    return const SizedBox.shrink();
+                  },
+                );
+              },
+            ),
     );
   }
 }

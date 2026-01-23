@@ -835,7 +835,12 @@ class _MaterialDesktopVideoControlsState
                                       child: TweenAnimationBuilder<double>(
                                         tween: Tween<double>(
                                           begin: 0.0,
-                                          end: buffering ? 1.0 : 0.0,
+                                          // Hide buffering indicator when thumbnail is visible
+                                          end: buffering &&
+                                                  !state(context)
+                                                      .isShowingThumbnail
+                                              ? 1.0
+                                              : 0.0,
                                         ),
                                         duration: _theme(context)
                                             .controlsTransitionDuration,

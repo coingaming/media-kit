@@ -7,6 +7,7 @@ import 'dart:async';
 import 'package:flutter/widgets.dart';
 import 'package:media_kit/media_kit.dart';
 
+import 'package:media_kit_video/src/video/offscreen_behavior.dart';
 import 'package:media_kit_video/src/video_controller/platform_video_controller.dart';
 
 import 'package:media_kit_video/src/video_controller/native_video_controller/native_video_controller.dart';
@@ -160,5 +161,44 @@ class VideoController {
   Future<void> get waitUntilFirstFrameRendered async {
     final instance = await platform.future;
     return instance.waitUntilFirstFrameRendered;
+  }
+
+  /// Whether video output is currently suspended.
+  Future<bool> get isSuspended async {
+    final instance = await platform.future;
+    return instance.isSuspended;
+  }
+
+  /// Suspends video frame processing.
+  ///
+  /// This can significantly reduce CPU/GPU usage when the video is not visible.
+  ///
+  /// The [mode] parameter determines how suspension is achieved:
+  /// - [OffscreenSuspensionMode.disableOutput]: Sets vo=null (stops rendering, may continue decoding)
+  /// - [OffscreenSuspensionMode.disableDecoding]: Sets vid=no (stops decoding entirely)
+  ///
+  /// Call [resumeVideoOutput] to resume video processing.
+  ///
+  /// Example:
+  /// ```dart
+  /// // Suspend when scrolled offscreen
+  /// await controller.suspendVideoOutput(OffscreenSuspensionMode.disableOutput);
+  ///
+  /// // Resume when scrolled back into view
+  /// await controller.resumeVideoOutput();
+  /// ```
+  Future<void> suspendVideoOutput(OffscreenSuspensionMode mode) async {
+    if (mode == OffscreenSuspensionMode.none) return;
+    final instance = await platform.future;
+    return instance.suspendVideoOutput(mode);
+  }
+
+  /// Resumes video frame processing after [suspendVideoOutput].
+  ///
+  /// This restores the video output to its normal state.
+  /// A seek to the current position is performed to refresh the video frame.
+  Future<void> resumeVideoOutput() async {
+    final instance = await platform.future;
+    return instance.resumeVideoOutput();
   }
 }

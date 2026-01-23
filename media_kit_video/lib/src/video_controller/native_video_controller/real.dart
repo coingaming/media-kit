@@ -12,6 +12,7 @@ import 'package:synchronized/synchronized.dart';
 
 import 'package:media_kit/media_kit.dart';
 
+import 'package:media_kit_video/src/video/offscreen_behavior.dart';
 import 'package:media_kit_video/src/utils/query_decoders.dart';
 import 'package:media_kit_video/src/video_controller/platform_video_controller.dart';
 
@@ -238,6 +239,94 @@ class NativeVideoController extends PlatformVideoController {
         },
       );
     }
+  }
+
+  /// The vo value before suspension, used to restore on resume.
+  String? _voBeforeSuspend;
+
+  /// The vid value before suspension, used to restore on resume.
+  String? _vidBeforeSuspend;
+
+  /// The suspension mode currently active.
+  OffscreenSuspensionMode? _currentSuspensionMode;
+
+  @override
+  Future<void> suspendVideoOutput(OffscreenSuspensionMode mode) async {
+    if (_disposed || isSuspended) return;
+
+    return lock.synchronized(() async {
+      if (_disposed || isSuspended) return;
+
+      _currentSuspensionMode = mode;
+
+      switch (mode) {
+        case OffscreenSuspensionMode.none:
+          return;
+
+        case OffscreenSuspensionMode.disableOutput:
+          // Save current vo value and disable video output
+          _voBeforeSuspend = configuration.vo ?? 'libmpv';
+          await setProperty('vo', 'null');
+          isSuspended = true;
+          debugPrint(
+              'media_kit: NativeVideoController: Suspended video output (vo=null)');
+          break;
+
+        case OffscreenSuspensionMode.disableDecoding:
+          // Save current vid value and disable video track
+          _vidBeforeSuspend = 'auto';
+          await setProperty('vid', 'no');
+          isSuspended = true;
+          debugPrint(
+              'media_kit: NativeVideoController: Suspended video decoding (vid=no)');
+          break;
+      }
+    });
+  }
+
+  @override
+  Future<void> resumeVideoOutput() async {
+    if (_disposed || !isSuspended) return;
+
+    return lock.synchronized(() async {
+      if (_disposed || !isSuspended) return;
+
+      final mode = _currentSuspensionMode;
+      if (mode == null || mode == OffscreenSuspensionMode.none) return;
+
+      switch (mode) {
+        case OffscreenSuspensionMode.none:
+          return;
+
+        case OffscreenSuspensionMode.disableOutput:
+          // Restore vo and refresh the frame
+          final vo = _voBeforeSuspend ?? configuration.vo ?? 'libmpv';
+          await setProperty('vo', vo);
+          // Seek to current position to refresh the video frame
+          final currentPosition = player.state.position;
+          await player.seek(currentPosition);
+          isSuspended = false;
+          _voBeforeSuspend = null;
+          debugPrint(
+              'media_kit: NativeVideoController: Resumed video output (vo=$vo)');
+          break;
+
+        case OffscreenSuspensionMode.disableDecoding:
+          // Restore vid
+          final vid = _vidBeforeSuspend ?? 'auto';
+          await setProperty('vid', vid);
+          // Seek to current position to refresh the video frame
+          final currentPosition = player.state.position;
+          await player.seek(currentPosition);
+          isSuspended = false;
+          _vidBeforeSuspend = null;
+          debugPrint(
+              'media_kit: NativeVideoController: Resumed video decoding (vid=$vid)');
+          break;
+      }
+
+      _currentSuspensionMode = null;
+    });
   }
 
   /// Disposes the instance. Releases allocated resources back to the system.

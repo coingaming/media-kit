@@ -14,6 +14,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart';
 
+import 'package:media_kit_video/src/video/offscreen_behavior.dart';
 import 'package:media_kit_video/src/video_controller/platform_video_controller.dart';
 
 /// {@template web_video_controller}
@@ -114,6 +115,28 @@ class WebVideoController extends PlatformVideoController {
     throw UnsupportedError(
       '[AndroidVideoController.setSize] is not available on web',
     );
+  }
+
+  @override
+  Future<void> suspendVideoOutput(OffscreenSuspensionMode mode) async {
+    if (isSuspended) return;
+
+    // On web, we can't directly control video decoding like mpv.
+    // We hide the video element to reduce rendering overhead.
+    if (mode != OffscreenSuspensionMode.none) {
+      _element?.style.visibility = 'hidden';
+      isSuspended = true;
+      debugPrint('media_kit: WebVideoController: Suspended video output');
+    }
+  }
+
+  @override
+  Future<void> resumeVideoOutput() async {
+    if (!isSuspended) return;
+
+    _element?.style.visibility = 'visible';
+    isSuspended = false;
+    debugPrint('media_kit: WebVideoController: Resumed video output');
   }
 
   /// Disposes the instance. Releases allocated resources back to the system.
