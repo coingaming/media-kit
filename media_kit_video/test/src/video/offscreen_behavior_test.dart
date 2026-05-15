@@ -219,14 +219,14 @@ void main() {
         const behavior2 = OffscreenBehavior(pauseWhenOffscreen: true);
         const behavior3 = OffscreenBehavior(pauseWhenOffscreen: false);
 
-        final set = {behavior1, behavior2, behavior3};
+        final set = <OffscreenBehavior>{}
+          ..addAll([behavior1, behavior2, behavior3]);
         // behavior1 and behavior2 are equal, so set should have 2 items
         expect(set.length, 2);
 
-        final map = <OffscreenBehavior, String>{
-          behavior1: 'first',
-          behavior2: 'second', // Should overwrite 'first'
-        };
+        final map = <OffscreenBehavior, String>{};
+        map[behavior1] = 'first';
+        map[behavior2] = 'second'; // Should overwrite 'first'
         expect(map[behavior1], 'second');
       });
     });

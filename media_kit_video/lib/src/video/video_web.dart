@@ -14,8 +14,6 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:media_kit_video/media_kit_video_controls/media_kit_video_controls.dart'
     as media_kit_video_controls;
 import 'package:media_kit_video/src/utils/dispose_safe_notifer.dart';
-import 'package:media_kit_video/src/video/offscreen_behavior.dart';
-
 import 'package:media_kit_video/src/utils/wakelock.dart';
 
 /// {@template video}
@@ -115,6 +113,8 @@ class Video extends StatefulWidget {
   /// FocusNode for keyboard input.
   final FocusNode? focusNode;
 
+  final Widget? thumbnail;
+
   /// Configuration for video behavior when scrolled offscreen.
   ///
   /// Use this to optimize performance when videos are in scrollable lists
@@ -151,6 +151,7 @@ class Video extends StatefulWidget {
     this.onEnterFullscreen = defaultEnterNativeFullscreen,
     this.onExitFullscreen = defaultExitNativeFullscreen,
     this.focusNode,
+    this.thumbnail,
     this.offscreenBehavior = const OffscreenBehavior(),
   });
 
@@ -168,6 +169,7 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
   late int? _width = widget.controller.player.state.width;
   late int? _height = widget.controller.player.state.height;
   late bool _visible = (_width ?? 0) > 0 && (_height ?? 0) > 0;
+  late bool _showThumbnail = !widget.controller.player.state.playing;
   bool _pauseDueToPauseUponEnteringBackgroundMode = false;
 
   ValueKey _key = const ValueKey(true);
@@ -210,10 +212,7 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
   }
 
   /// Whether the thumbnail is currently being displayed.
-  ///
-  /// Note: Thumbnails are not supported on web platform.
-  /// This getter always returns `false`.
-  bool get isShowingThumbnail => false;
+  bool get isShowingThumbnail => widget.thumbnail != null && _showThumbnail;
 
   /// Handles transition to offscreen state.
   void _handleOffscreen(double visibleFraction) {
@@ -557,6 +556,29 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
       ],
     );
     // --------------------------------------------------
+    if (widget.thumbnail != null) {
+      _subscriptions.addAll([
+        widget.controller.player.stream.playing.listen(
+          (value) {
+            if (value && !_showThumbnail) return;
+            setState(() {
+              _showThumbnail =
+                  widget.controller.player.state.position.inSeconds == 0;
+            });
+          },
+        ),
+        widget.controller.player.stream.position.listen(
+          (value) {
+            final playing = widget.controller.player.state.playing;
+            if (playing && !_showThumbnail) return;
+            setState(() {
+              _showThumbnail = value.inSeconds == 0;
+            });
+          },
+        ),
+      ]);
+    }
+    // --------------------------------------------------
     if (widget.wakelock) {
       if (widget.controller.player.state.playing) {
         _wakelock.enable();
@@ -630,6 +652,17 @@ class VideoState extends State<Video> with WidgetsBindingObserver {
                     child: _buildVideoView(videoViewParameters),
                   ),
                 ),
+                if (widget.thumbnail != null)
+                  Positioned.fill(
+                    child: AnimatedOpacity(
+                      opacity: _showThumbnail ? 1.0 : 0.0,
+                      duration: const Duration(milliseconds: 150),
+                      child: IgnorePointer(
+                        ignoring: !_showThumbnail,
+                        child: widget.thumbnail!,
+                      ),
+                    ),
+                  ),
                 if (videoViewParameters.subtitleViewConfiguration.visible &&
                     !(widget.controller.player.platform?.configuration.libass ??
                         false))
