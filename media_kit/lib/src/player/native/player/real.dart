@@ -51,17 +51,17 @@ void nativeEnsureInitialized({String? libmpv}) {
     print('$tag Found ${references.length} reference(s).');
     print('$tag Disposing:\n${references.map((e) => e.address).join('\n')}');
 
+    // First, clear wakeup callbacks on all old handles to prevent mpv from
+    // invoking deleted Dart NativeCallable trampolines (SIGABRT on Flutter 3.38+).
+    // mpv_set_wakeup_callback is synchronous: once it returns, mpv will never
+    // call the old (dead) trampoline again.
+    // See: https://github.com/media-kit/media-kit/issues/1314
     final mpv = generated.MPV(DynamicLibrary.open(NativeLibrary.path));
-
-    // CRITICAL: Clear wakeup callbacks FIRST to prevent "Callback invoked after
-    // it has been deleted" crash. During hot restart, the old NativeCallable
-    // trampolines are destroyed when the old isolate dies, but libmpv still
-    // holds pointers to them. We must clear these before sending any commands.
     for (final reference in references) {
       mpv.mpv_set_wakeup_callback(reference.cast(), nullptr, nullptr);
     }
 
-    // Now safe to send quit command since callbacks are cleared.
+    // Now it's safe to send quit; mpv won't try to notify Dart anymore.
     final cmd = 'quit'.toNativeUtf8();
     try {
       for (final reference in references) {
@@ -106,7 +106,6 @@ class NativePlayer extends PlatformPlayer {
 
       await NativeReferenceHolder.instance.remove(ctx);
 
-      // tips: modified here
       if (Platform.isIOS) {
         await _command(['quit']);
       }
@@ -119,7 +118,6 @@ class NativePlayer extends PlatformPlayer {
 
       Initializer(mpv).dispose(ctx);
 
-      // tips: modified here
       if (!Platform.isIOS) {
         Future.delayed(const Duration(seconds: 5), () {
           _command(['quit']);
